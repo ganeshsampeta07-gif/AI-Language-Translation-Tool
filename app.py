@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-from deep_translator import GoogleTranslator
+from deep_translator import GoogleTranslator, MyMemoryTranslator
 import traceback
 import os
 
@@ -8,41 +8,95 @@ base_dir = os.path.abspath(os.path.dirname(__file__))
 app = Flask(__name__, template_folder=os.path.join(base_dir, 'templates'), static_folder=os.path.join(base_dir, 'static'))
 CORS(app)
 
+# Mapping from short frontend codes to MyMemory regional codes
+MYMEMORY_LANG_MAP = {
+    'en': 'en-GB',
+    'te': 'te-IN',
+    'hi': 'hi-IN',
+    'ta': 'ta-IN',
+    'es': 'es-ES',
+    'fr': 'fr-FR',
+    'de': 'de-DE',
+    'ja': 'ja-JP',
+}
+
+
+def translate_with_google(text, source, target):
+    """Primary translator: Google Translate (free, scraping-based)."""
+    translator = GoogleTranslator(source=source, target=target)
+    result = translator.translate(text)
+    if result is None or result.strip() == '':
+        raise ValueError('Google returned an empty translation.')
+    return result
+
+
+def translate_with_mymemory(text, source, target):
+    """Fallback translator: MyMemory (free REST API, no key required)."""
+    mm_source = MYMEMORY_LANG_MAP.get(source, source)
+    mm_target = MYMEMORY_LANG_MAP.get(target, target)
+
+    # MyMemory does not support 'auto'; skip fallback if auto-detect
+    if source == 'auto':
+        raise ValueError('MyMemory does not support auto-detection.')
+
+    translator = MyMemoryTranslator(source=mm_source, target=mm_target)
+    result = translator.translate(text)
+    if result is None or result.strip() == '':
+        raise ValueError('MyMemory returned an empty translation.')
+    return result
+
+
 @app.route('/')
 @app.route('/index.html')
 def index():
     return render_template('index.html')
 
+
 @app.route('/translate', methods=['POST'])
 def translate():
     try:
         data = request.get_json()
-        
+
         if not data:
             return jsonify({'success': False, 'error': 'Invalid request format. JSON expected.'}), 400
-            
+
         text = data.get('text', '').strip()
         source_language = data.get('source_language', 'auto')
         target_language = data.get('target_language', 'en')
-        
+
         if not text:
             return jsonify({'success': False, 'error': 'Text to translate cannot be empty.'}), 400
-            
+
         if source_language != 'auto' and source_language == target_language:
             return jsonify({'success': False, 'error': 'Source and target languages cannot be the same.'}), 400
-            
-        # Translate using deep-translator
-        translator = GoogleTranslator(source=source_language, target=target_language)
-        translated_text = translator.translate(text)
-        
+
+        # --- Attempt 1: GoogleTranslator (primary) ---
+        try:
+            translated_text = translate_with_google(text, source_language, target_language)
+            return jsonify({'success': True, 'translated_text': translated_text})
+        except Exception as google_err:
+            print(f'[GoogleTranslator failed] {google_err}')
+
+        # --- Attempt 2: MyMemoryTranslator (fallback) ---
+        try:
+            translated_text = translate_with_mymemory(text, source_language, target_language)
+            return jsonify({'success': True, 'translated_text': translated_text})
+        except Exception as mymemory_err:
+            print(f'[MyMemoryTranslator failed] {mymemory_err}')
+
+        # --- Both translators failed ---
         return jsonify({
-            'success': True,
-            'translated_text': translated_text
-        })
-        
+            'success': False,
+            'error': 'Unable to translate the text. Please try again later.'
+        }), 500
+
     except Exception as e:
         print(traceback.format_exc())
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({
+            'success': False,
+            'error': 'An unexpected error occurred. Please try again.'
+        }), 500
+
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
